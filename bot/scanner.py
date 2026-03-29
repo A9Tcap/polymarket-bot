@@ -1,6 +1,6 @@
 """
 Market Scanner — fetches and filters active Kalshi markets
-Uses RSA-PSS signing as required by Kalshi API
+Public markets endpoint requires no authentication
 """
 
 import logging
@@ -8,6 +8,8 @@ import aiohttp
 import os
 import time
 import base64
+import json
+import asyncio
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
@@ -24,17 +26,12 @@ def get_auth_headers(method: str, path: str) -> Dict:
     private_key_str = os.getenv('KALSHI_PRIVATE_KEY', '')
 
     timestamp = str(int(time.time() * 1000))
-
-    # Strip query parameters from path before signing
     path_to_sign = path.split('?')[0]
     message = timestamp + method.upper() + path_to_sign
 
     try:
         private_key_bytes = private_key_str.encode()
-
-        # Handle PEM format
         if not private_key_bytes.strip().startswith(b'-----'):
-            # Wrap bare base64 key in PEM headers
             private_key_bytes = (
                 b'-----BEGIN RSA PRIVATE KEY-----\n' +
                 private_key_str.encode() +
@@ -47,7 +44,6 @@ def get_auth_headers(method: str, path: str) -> Dict:
             backend=default_backend()
         )
 
-        # RSA-PSS signing
         signature = private_key.sign(
             message.encode(),
             padding.PSS(
@@ -75,53 +71,55 @@ class MarketScanner:
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'polymarket-bot/1.0',
+            })
         return self.session
 
     async def get_active_markets(self, min_liquidity: float = 100) -> List[Dict]:
-        """Fetch all active Kalshi markets above minimum liquidity threshold."""
+        """Fetch all active Kalshi markets — public endpoint, no auth needed."""
         session = await self._get_session()
         markets = []
         cursor = None
 
         try:
             while True:
-                path = '/trade-api/v2/markets'
-                params = {'status': 'open', 'limit': 200}
+                params = {'status': 'open', 'limit': 100}
                 if cursor:
                     params['cursor'] = cursor
 
-                # Sign path without query params
-                headers = get_auth_headers('GET', path)
+                url = f"{KALSHI_API}/markets"
 
-                # Build full URL with params
-                url = f"https://api.elections.kalshi.com{path}"
-
-                async with session.get(url, params=params, headers=headers) as resp:
+                async with session.get(url, params=params) as resp:
                     text = await resp.text()
+                    if resp.status == 429:
+                        log.warning("Rate limited — waiting 30s before retry")
+                        await asyncio.sleep(30)
+                        continue
                     if resp.status != 200:
-                        log.error(f"API error: {resp.status} {text[:200]}")
+                        log.error(f"API error: {resp.status} {text[:300]}")
                         break
-                    import json
                     data = json.loads(text)
 
                 batch = data.get('markets', [])
+                log.info(f"Got batch of {len(batch)} markets")
                 if not batch:
                     break
 
                 for market in batch:
                     parsed = self._parse_market(market)
-                    if parsed and parsed['liquidity'] >= min_liquidity:
+                    if parsed:
                         markets.append(parsed)
 
                 cursor = data.get('cursor')
-                if not cursor or len(markets) >= 500:
+                if not cursor or len(markets) >= 300:
                     break
 
         except Exception as e:
             log.error(f"Error fetching markets: {e}", exc_info=True)
 
-        log.info(f"Fetched {len(markets)} markets with liquidity >= ${min_liquidity}")
+        log.info(f"Fetched {len(markets)} total markets")
         return markets
 
     def _parse_market(self, raw: Dict) -> Dict:
