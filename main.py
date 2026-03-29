@@ -38,11 +38,10 @@ async def main():
 
     # Validate environment variables
     required_env = [
-        'POLYMARKET_API_KEY',
-        'POLYMARKET_WALLET_ADDRESS',
-        'POLYMARKET_PRIVATE_KEY',
-        'ANTHROPIC_API_KEY',
-        'NEWS_API_KEY',
+    'KALSHI_API_KEY',
+    'KALSHI_PRIVATE_KEY',
+    'ANTHROPIC_API_KEY',
+    'NEWS_API_KEY',
     ]
     missing = [v for v in required_env if not os.getenv(v)]
     if missing:
