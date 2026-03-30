@@ -32,3 +32,62 @@ def sign_request(method, path, private_key_str):
 
 
 class TradeExecutor:
+    def __init__(self, config):
+        self.dry_run = config.get('dry_run', True)
+        self.private_key = os.getenv('KALSHI_PRIVATE_KEY', '')
+        self.session = None
+        if not self.dry_run:
+            log.warning("LIVE TRADING MODE ENABLED")
+
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    async def execute(self, trade):
+        market = trade['market']
+        direction = trade['direction']
+        size = trade['position_size_usdc']
+        question = market['question'][:60]
+
+        if self.dry_run:
+            log.info(f"[DRY RUN] Would execute: {direction} ${size:.2f} on '{question}'")
+            return {'status': 'dry_run', 'direction': direction, 'size': size, 'market_id': market['id'], 'question': question}
+
+        try:
+            ticker = market.get('ticker') or market.get('id')
+            side = 'yes' if direction == 'BUY_YES' else 'no'
+            price = market['yes_price'] if direction == 'BUY_YES' else market['no_price']
+            price_cents = max(1, min(99, round(price * 100)))
+            contracts = max(1, round(size / (price_cents / 100)))
+
+            order_payload = {
+                'ticker': ticker,
+                'client_order_id': str(uuid.uuid4()),
+                'type': 'market',
+                'action': 'buy',
+                'side': side,
+                'count': contracts,
+            }
+
+            path = '/trade-api/v2/portfolio/orders'
+            body = json.dumps(order_payload)
+            headers = sign_request('POST', path, self.private_key)
+
+            session = await self._get_session()
+            async with session.post(f"https://api.elections.kalshi.com{path}", headers=headers, data=body) as resp:
+                result = await resp.json()
+                if resp.status in (200, 201):
+                    log.info(f"Order placed: {side.upper()} {contracts} contracts on '{question}'")
+                    return {'status': 'filled', 'order': result}
+                else:
+                    log.error(f"Order failed: {resp.status} {result}")
+                    return {'status': 'error', 'response': result}
+
+        except Exception as e:
+            log.error(f"Trade execution failed: {e}", exc_info=True)
+            return {'status': 'error', 'error': str(e)}
+
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
