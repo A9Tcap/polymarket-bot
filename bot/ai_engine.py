@@ -26,12 +26,9 @@ class AISignalEngine:
         return self.session
 
     async def get_relevant_news(self, query: str) -> List[Dict]:
-        """Fetch recent news articles relevant to a market question."""
         session = await self._get_session()
         try:
-            # Extract key terms from question (first 100 chars)
-            search_query = query[:100].split('?')[0]
-
+            search_query = query[:80].split('?')[0]
             params = {
                 'q': search_query,
                 'sortBy': 'publishedAt',
@@ -58,86 +55,98 @@ class AISignalEngine:
             return []
 
     async def analyze_single_market(self, market: Dict) -> Dict:
-        """Analyze a single market using news + Claude reasoning."""
         question = market['question']
         yes_price = market['yes_price']
-        implied_prob = yes_price  # Price = implied probability on Polymarket
 
-        # Fetch relevant news
         news = await self.get_relevant_news(question)
         news_text = "\n".join([
             f"- [{a['source']}] {a['title']}: {a['description']}"
             for a in news
         ]) or "No recent news found."
 
-        prompt = f"""You are a sharp prediction market analyst. Analyze this market and determine if there's a profitable edge.
+        prompt = f"""You are a sharp prediction market analyst. Analyze this market carefully.
 
 MARKET: {question}
-CURRENT YES PRICE: {yes_price:.2%} (this is the market's implied probability of YES)
-LIQUIDITY: ${market['liquidity']:,.0f}
+CURRENT YES PRICE: {yes_price:.2%} (market's implied probability that YES wins)
+CURRENT NO PRICE: {1-yes_price:.2%} (market's implied probability that NO wins)
 CATEGORY: {market['category']}
 END DATE: {market['end_date']}
 
 RECENT NEWS:
 {news_text}
 
-Analyze this carefully:
-1. What is your estimated TRUE probability of YES based on news and reasoning?
-2. Is the market overpriced or underpriced?
-3. What is the edge (your probability minus market price)?
-4. What trade do you recommend: BUY_YES, BUY_NO, or SKIP?
+Your job:
+1. Estimate the TRUE probability of YES resolving based on all available info
+2. Compare to the market price to find edge
+3. Edge = abs(your_probability - market_price) — always a POSITIVE number
+4. Recommend BUY_YES if you think YES is underpriced, BUY_NO if YES is overpriced, SKIP if no edge
 
-Respond ONLY with a JSON object like this:
+Rules:
+- Only recommend a trade if edge >= 0.04 (4%) and you have MEDIUM or HIGH confidence
+- Edge must always be a positive number (0.04 to 0.50 range)
+- Be realistic — most markets are fairly priced, SKIP is often correct
+
+Respond ONLY with valid JSON, no markdown, no explanation outside the JSON:
 {{
-  "true_probability": 0.72,
-  "market_price": {yes_price},
-  "edge": 0.07,
+  "true_probability_yes": 0.65,
+  "market_price_yes": {yes_price:.4f},
+  "edge": 0.08,
   "direction": "BUY_YES",
   "confidence": "HIGH",
-  "reasoning": "Brief explanation of your analysis",
+  "reasoning": "One sentence explanation",
   "signal": true
 }}
 
-Only set signal=true if edge >= 0.04 and confidence is MEDIUM or HIGH.
-If you would skip this market, set signal=false and direction=SKIP."""
+Set signal=true only if edge >= 0.04 and direction is not SKIP."""
 
         try:
             response = await self.anthropic.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=500,
+                max_tokens=400,
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = response.content[0].text.strip()
-            # Strip markdown if present
             raw = raw.replace('```json', '').replace('```', '').strip()
+
+            start = raw.find('{')
+            end = raw.rfind('}') + 1
+            if start == -1 or end == 0:
+                return None
+            raw = raw[start:end]
+
             analysis = json.loads(raw)
 
-            if analysis.get('signal') and analysis.get('direction') != 'SKIP':
+            edge = abs(float(analysis.get('edge', 0)))
+            direction = analysis.get('direction', 'SKIP')
+            signal = analysis.get('signal', False)
+            confidence = analysis.get('confidence', 'LOW')
+
+            if signal and direction != 'SKIP' and edge >= 0.04 and confidence in ('MEDIUM', 'HIGH'):
+                true_prob = float(analysis.get('true_probability_yes', yes_price))
                 return {
                     'type': 'ai_signal',
                     'market': market,
-                    'direction': analysis['direction'],
-                    'true_probability': analysis['true_probability'],
+                    'direction': direction,
+                    'true_probability': true_prob,
                     'market_price': yes_price,
-                    'edge': analysis['edge'],
-                    'confidence': analysis['confidence'],
-                    'reasoning': analysis['reasoning'],
-                    'expected_value': analysis['edge'] * analysis.get('true_probability', 0.5),
+                    'edge': edge,
+                    'confidence': confidence,
+                    'reasoning': analysis.get('reasoning', ''),
+                    'expected_value': edge * min(true_prob, 1 - true_prob),
                     'source': 'ai_engine',
                 }
+
         except Exception as e:
             log.warning(f"AI analysis failed for '{question[:50]}': {e}")
 
         return None
 
     async def analyze_markets(self, markets: List[Dict]) -> List[Dict]:
-        """Analyze a batch of markets and return trade signals."""
         signals = []
 
-        # Filter to markets in interesting probability range (avoid extremes)
         candidates = [
             m for m in markets
-            if 0.10 <= m['yes_price'] <= 0.90
+            if 0.08 <= m['yes_price'] <= 0.92
         ]
 
         log.info(f"Analyzing {len(candidates)} candidate markets with AI...")
@@ -147,7 +156,7 @@ If you would skip this market, set signal=false and direction=SKIP."""
             if signal:
                 signals.append(signal)
                 log.info(
-                    f"Signal: {signal['direction']} '{market['question'][:60]}...' "
+                    f"Signal: {signal['direction']} '{market['question'][:55]}' "
                     f"edge={signal['edge']:.2%} conf={signal['confidence']}"
                 )
 
