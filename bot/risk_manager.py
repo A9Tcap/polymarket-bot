@@ -13,10 +13,8 @@ class RiskManager:
         self.bankroll = config['bankroll']
         self.max_position_pct = config['max_position_pct']
         self.min_edge = config['min_edge']
-        self.min_probability = config['min_probability']
-        self.max_probability = config['max_probability']
-        self.open_positions = {}  # market_id -> position size
-        self.daily_loss_limit_pct = 0.10  # stop trading if down 10% in a day
+        self.open_positions = {}
+        self.daily_loss_limit_pct = 0.10
         self.daily_pnl = 0.0
         self.max_concurrent_positions = 10
 
@@ -26,15 +24,12 @@ class RiskManager:
         return max(0, self.bankroll - committed)
 
     def filter_and_size(self, opportunities: List[Dict]) -> List[Dict]:
-        """Apply risk rules and return approved trades with position sizes."""
         approved = []
 
-        # Check daily loss limit
         if self.daily_pnl < -(self.bankroll * self.daily_loss_limit_pct):
             log.warning(f"Daily loss limit hit (PnL: ${self.daily_pnl:.2f}). No new trades today.")
             return []
 
-        # Check concurrent position limit
         if len(self.open_positions) >= self.max_concurrent_positions:
             log.warning(f"Max concurrent positions ({self.max_concurrent_positions}) reached.")
             return []
@@ -43,58 +38,37 @@ class RiskManager:
             result = self._evaluate_opportunity(opp)
             if result:
                 approved.append(result)
-                # Limit to 3 new trades per cycle
                 if len(approved) >= 3:
                     break
 
         return approved
 
     def _evaluate_opportunity(self, opp: Dict) -> Dict:
-        """Evaluate a single opportunity against risk rules."""
         market = opp.get('market', {})
         market_id = market.get('id')
         edge = opp.get('edge', 0)
         direction = opp.get('direction', '')
         opp_type = opp.get('type', '')
 
-        # Skip if already in this market
         if market_id in self.open_positions:
-            log.debug(f"Skipping {market_id}: already have position")
             return None
 
-        # Minimum edge requirement
         if edge < self.min_edge:
             log.debug(f"Skipping: edge {edge:.2%} below minimum {self.min_edge:.2%}")
             return None
 
-        # Probability range filter (for directional trades)
-        if direction in ('BUY_YES', 'BUY_NO'):
-            yes_price = market.get('yes_price', 0.5)
-            bet_price = yes_price if direction == 'BUY_YES' else market.get('no_price', 0.5)
-
-            if bet_price < self.min_probability:
-                log.debug(f"Skipping: price {bet_price:.2%} below min probability {self.min_probability:.2%}")
-                return None
-            if bet_price > self.max_probability:
-                log.debug(f"Skipping: price {bet_price:.2%} above max probability {self.max_probability:.2%}")
-                return None
-
-        # Position sizing using Kelly Criterion (quarter Kelly for safety)
+        # Position sizing
         position_size = self._kelly_size(opp)
-
-        # Cap at max position size
         max_position = self.bankroll * self.max_position_pct
         position_size = min(position_size, max_position)
 
-        # Minimum trade size
-        if position_size < 10:
+        if position_size < 5:
             log.debug(f"Skipping: position size ${position_size:.2f} too small")
             return None
 
-        # Check available bankroll
         if position_size > self.available_bankroll:
             position_size = min(self.available_bankroll * 0.9, position_size)
-            if position_size < 10:
+            if position_size < 5:
                 log.debug("Skipping: insufficient bankroll")
                 return None
 
@@ -106,30 +80,33 @@ class RiskManager:
         }
 
     def _kelly_size(self, opp: Dict) -> float:
-        """
-        Quarter-Kelly position sizing for safety.
-        Kelly fraction = (bp - q) / b
-        where b = odds - 1, p = win probability, q = 1 - p
-        """
         edge = opp.get('edge', 0)
         true_prob = opp.get('true_probability', 0.6)
-        market_price = opp.get('market_price', 0.5)
+        direction = opp.get('direction', 'BUY_YES')
+        market = opp.get('market', {})
 
-        if market_price <= 0 or market_price >= 1:
-            return self.bankroll * 0.02
+        # Use the correct side's price for Kelly calculation
+        if direction == 'BUY_NO':
+            bet_price = market.get('no_price', 1 - opp.get('market_price', 0.5))
+            win_prob = 1 - true_prob
+        else:
+            bet_price = opp.get('market_price', 0.5)
+            win_prob = true_prob
 
-        # Decimal odds from market price
-        b = (1 / market_price) - 1
-        p = true_prob
+        if bet_price <= 0 or bet_price >= 1:
+            return self.bankroll * 0.01
+
+        b = (1 / bet_price) - 1
+        p = win_prob
         q = 1 - p
 
         if b <= 0:
-            return self.bankroll * 0.02
+            return self.bankroll * 0.01
 
         kelly_fraction = (b * p - q) / b
-        kelly_fraction = max(0, min(kelly_fraction, 0.25))  # cap at 25%
+        kelly_fraction = max(0, min(kelly_fraction, 0.20))
 
-        # Quarter Kelly
+        # Quarter Kelly for safety
         safe_fraction = kelly_fraction * 0.25
 
         return self.bankroll * safe_fraction
