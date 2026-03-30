@@ -18,6 +18,7 @@ from bot.risk_manager import RiskManager
 from bot.executor import TradeExecutor
 from bot.logger import BotLogger
 from bot.performance_tracker import PerformanceTracker
+from dashboard import start_dashboard
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +77,10 @@ async def main():
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+
+    # Start web dashboard
+    dashboard = await start_dashboard()
+    log.info("Dashboard started — view at your Railway public URL")
 
     log.info("Bot initialized. Starting main loop...")
     if config['dry_run']:
