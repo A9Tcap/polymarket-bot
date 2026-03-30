@@ -129,8 +129,8 @@ async def main():
                 result = await executor.execute(trade)
                 bot_logger.log_trade(trade, result)
 
-                # Track simulated trades for performance analysis
-                if config['dry_run'] and result.get('status') == 'dry_run':
+               # Track all trades for performance analysis
+                if result.get('status') in ('dry_run', 'filled'):
                     tracker.record_simulated_trade(trade, result)
 
             # Step 7: Check if any previous simulated trades have resolved
