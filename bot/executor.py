@@ -130,10 +130,3 @@ class TradeExecutor:
         if self.session and not self.session.closed:
             await self.session.close()
 ```
-
-Also update `requirements.txt` — remove `kalshi-py` since we're not using it:
-```
-anthropic>=0.25.0
-aiohttp>=3.9.0
-cryptography>=41.0.0
-python-dotenv>=1.0.0
