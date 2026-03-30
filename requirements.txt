@@ -2,3 +2,4 @@ anthropic>=0.25.0
 aiohttp>=3.9.0
 cryptography>=41.0.0
 python-dotenv>=1.0.0
+kalshi-py>=2.0.0
