@@ -68,6 +68,7 @@ class TradeExecutor:
                 'action': 'buy',
                 'side': side,
                 'count': contracts,
+                'yes_price': price_cents if side == 'yes' else 100 - price_cents,
             }
 
             path = '/trade-api/v2/portfolio/orders'
