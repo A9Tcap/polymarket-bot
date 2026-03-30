@@ -18,8 +18,8 @@ def sign_request(method, path, private_key_str):
     path_to_sign = path.split('?')[0]
     message = timestamp + method.upper() + path_to_sign
     try:
-        private_key_bytes = private_key_str.strip().encode()
-        if not private_key_bytes.startswith(b'-----'):
+private_key_bytes = private_key_str.strip().replace('\\n', '\n').encode()
+if not private_key_bytes.startswith(b'-----'):
             private_key_bytes = b'-----BEGIN RSA PRIVATE KEY-----\n' + private_key_bytes + b'\n-----END RSA PRIVATE KEY-----'
         private_key = serialization.load_pem_private_key(private_key_bytes, password=None, backend=default_backend())
         signature = private_key.sign(message.encode(), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256.digest_size), hashes.SHA256())
