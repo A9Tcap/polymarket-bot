@@ -14,18 +14,15 @@ log = logging.getLogger('executor')
 
 def sign_request(method, path, private_key_str):
     timestamp = str(int(time.time() * 1000))
-    path_to_sign = path.split('?')[0]
-    message = timestamp + method.upper() + path_to_sign
-    private_key_bytes = private_key_str.strip().replace('\\n', '\n').encode()
-    if not private_key_bytes.startswith(b'-----'):
-        private_key_bytes = b'-----BEGIN RSA PRIVATE KEY-----\n' + private_key_bytes + b'\n-----END RSA PRIVATE KEY-----'
+    message = timestamp + method.upper() + path.split('?')[0]
+    key_str = private_key_str.strip().replace('\\n', '\n')
+    key_bytes = key_str.encode()
     try:
-        private_key = serialization.load_pem_private_key(private_key_bytes, password=None, backend=default_backend())
-        signature = private_key.sign(message.encode(), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256.digest_size), hashes.SHA256())
-        sig_b64 = base64.b64encode(signature).decode()
+        private_key = serialization.load_pem_private_key(key_bytes, password=None, backend=default_backend())
+        sig = private_key.sign(message.encode(), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256.digest_size), hashes.SHA256())
         return {
             'KALSHI-ACCESS-KEY': os.getenv('KALSHI_API_KEY'),
-            'KALSHI-ACCESS-SIGNATURE': sig_b64,
+            'KALSHI-ACCESS-SIGNATURE': base64.b64encode(sig).decode(),
             'KALSHI-ACCESS-TIMESTAMP': timestamp,
             'Content-Type': 'application/json',
         }
@@ -35,4 +32,3 @@ def sign_request(method, path, private_key_str):
 
 
 class TradeExecutor:
-    def __init_
