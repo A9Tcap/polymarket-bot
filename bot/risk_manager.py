@@ -54,7 +54,7 @@ class RiskManager:
             return None
 
         if edge < self.min_edge:
-            log.debug(f"Skipping: edge {edge:.2%} below minimum {self.min_edge:.2%}")
+            log.info(f"Skipping: edge {edge:.2%} below minimum {self.min_edge:.2%}")
             return None
 
         # Position sizing
