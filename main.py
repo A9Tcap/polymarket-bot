@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""
-Polymarket Trading Bot
-Autonomous trading with AI news analysis, statistical modeling, and arbitrage detection.
-"""
-
 import asyncio
 import logging
 import os
+import json
 import signal
 import sys
 from datetime import datetime
@@ -29,6 +25,23 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger('main')
+
+POSITIONS_FILE = 'open_positions.json'
+
+
+def load_open_positions():
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_open_positions(positions):
+    with open(POSITIONS_FILE, 'w') as f:
+        json.dump(positions, f)
 
 
 async def main():
@@ -69,6 +82,11 @@ async def main():
     bot_logger = BotLogger()
     tracker = PerformanceTracker()
 
+    # Load persisted open positions so we don't double-bet after restarts
+    open_positions = load_open_positions()
+    risk_manager.open_positions = open_positions
+    log.info(f"Loaded {len(open_positions)} existing open positions from disk")
+
     running = True
     def shutdown(sig, frame):
         nonlocal running
@@ -78,11 +96,10 @@ async def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start web dashboard
     dashboard = await start_dashboard()
     log.info("Dashboard started — view at your Railway public URL")
-
     log.info("Bot initialized. Starting main loop...")
+
     if config['dry_run']:
         log.info("*** DRY RUN MODE — Trades simulated & tracked for performance analysis ***")
 
@@ -92,11 +109,8 @@ async def main():
         log.info(f"\n--- Scan Cycle #{cycle} ---")
 
         try:
-            # Step 1: Scan markets
             log.info("Scanning active markets...")
-            markets = await scanner.get_active_markets(
-                min_liquidity=config['min_liquidity']
-            )
+            markets = await scanner.get_active_markets(min_liquidity=config['min_liquidity'])
             log.info(f"Found {len(markets)} qualifying markets")
 
             if not markets:
@@ -104,39 +118,40 @@ async def main():
                 await asyncio.sleep(60)
                 continue
 
-            # Step 2: AI signal analysis
             log.info("Running AI signal analysis on top markets...")
             top_markets = markets[:20]
             ai_signals = await ai_engine.analyze_markets(top_markets)
             log.info(f"AI generated {len(ai_signals)} signals")
 
-            # Step 3: Arbitrage detection
             log.info("Checking for arbitrage opportunities...")
             arb_opportunities = await arbitrage.find_opportunities(markets)
             log.info(f"Found {len(arb_opportunities)} arbitrage opportunities")
 
-            # Step 4: Combine and rank
             all_opportunities = ai_signals + arb_opportunities
             all_opportunities.sort(key=lambda x: x.get('expected_value', 0), reverse=True)
 
-            # Step 5: Risk manager
             log.info("Applying risk management filters...")
             approved_trades = risk_manager.filter_and_size(all_opportunities)
             log.info(f"{len(approved_trades)} trades approved by risk manager")
 
-            # Step 6: Execute or simulate
             for trade in approved_trades:
                 result = await executor.execute(trade)
                 bot_logger.log_trade(trade, result)
 
-               # Track all trades for performance analysis
+                # Track all trades for dashboard
                 if result.get('status') in ('dry_run', 'filled'):
                     tracker.record_simulated_trade(trade, result)
 
-            # Step 7: Check if any previous simulated trades have resolved
+                # Persist position so we don't double-bet after restart
+                if result.get('status') == 'filled':
+                    market_id = trade['market']['id']
+                    open_positions[market_id] = trade.get('position_size_usdc', 0)
+                    risk_manager.open_positions = open_positions
+                    save_open_positions(open_positions)
+
+            # Check if any tracked markets have resolved
             await tracker.check_resolutions()
 
-            # Step 8: Log cycle summary
             bot_logger.log_cycle(cycle, markets, all_opportunities, approved_trades)
 
         except Exception as e:
